@@ -69,6 +69,61 @@ void CACHE::handle_fill()
   }
 }
 
+
+//clflush
+bool CACHE::handle_clflush(PACKET& pkt)
+{
+    uint32_t set = get_set(pkt.address);
+    uint32_t way = get_way(pkt.address, set);
+    uint64_t max_way = get_max_way(set);
+
+    // 1) If line exists in this cache
+    if (way < max_way) {
+        BLOCK& blk = block[set * NUM_WAY + way];
+
+        // If dirty → write back to lowest level
+        if (blk.dirty) {
+            CACHE* target = lower_level;
+
+            // Walk down to the lowest level
+            while (target && target->lower_level)
+                target = target->lower_level;
+
+            if (target) {
+                PACKET wb;
+                wb.type       = WRITEBACK;
+                wb.address    = blk.address;
+                wb.data       = blk.data;
+                wb.cpu        = pkt.cpu;
+                wb.fill_level = target->fill_level;
+                wb.to_return.clear();
+
+                if (target->add_wq(&wb) == -2)
+                    return false; // backpressure
+            }
+        }
+
+        // Invalidate line locally
+        blk.valid    = false;
+        blk.dirty    = false;
+        blk.prefetch = false;
+        blk.address  = 0;
+    }
+
+    // 2) Always propagate CLFLUSH downward
+    if (lower_level != NULL && lower_level->lower_level) {
+        PACKET down = pkt;
+        down.fill_level = lower_level->fill_level;
+        down.to_return.clear();
+
+        if (lower_level->add_wq(&down) == -2)
+            return false;
+    }
+
+    return true;
+}
+//clflush
+
 void CACHE::handle_writeback()
 {
   while (writes_available_this_cycle > 0) {
@@ -77,6 +132,18 @@ void CACHE::handle_writeback()
 
     // handle the oldest entry
     PACKET& handle_pkt = WQ.front();
+
+//clflush
+    if (handle_pkt.type == CLFLUSH) {
+        bool success = handle_clflush(handle_pkt);
+        if (!success)
+            return;
+
+        writes_available_this_cycle--;
+        WQ.pop_front();
+        continue;
+    }
+//clflush
 
     // access cache
     uint32_t set = get_set(handle_pkt.address);

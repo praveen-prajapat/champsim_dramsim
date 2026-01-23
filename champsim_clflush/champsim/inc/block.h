@@ -50,6 +50,7 @@ public:
 
   bool is_ACT = false;
 
+
   uint64_t CRA_idx = uint64_t(-1);
 
   uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()}, 

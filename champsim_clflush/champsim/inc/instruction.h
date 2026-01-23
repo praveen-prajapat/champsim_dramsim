@@ -47,6 +47,10 @@ struct ooo_model_instr {
   bool is_branch = 0, is_memory = 0, branch_taken = 0, branch_mispredicted = 0, source_added[NUM_INSTR_SOURCES] = {},
        destination_added[NUM_INSTR_DESTINATIONS_SPARC] = {};
 
+  //clflush
+  bool is_clflush =0;
+  //clflush
+
   uint8_t asid[2] = {std::numeric_limits<uint8_t>::max(), std::numeric_limits<uint8_t>::max()};
 
   uint8_t branch_type = NOT_BRANCH;
@@ -83,6 +87,10 @@ struct ooo_model_instr {
     this->is_branch = instr.is_branch;
     this->branch_taken = instr.branch_taken;
 
+    //clflush
+    this->is_clflush = instr.is_clflush;
+    //clflush
+
     asid[0] = cpu;
     asid[1] = cpu;
   }
@@ -97,6 +105,10 @@ struct ooo_model_instr {
     this->ip = instr.ip;
     this->is_branch = instr.is_branch;
     this->branch_taken = instr.branch_taken;
+
+    //clflush
+    this->is_clflush = instr.is_clflush;
+    //clflush
 
     std::copy(std::begin(instr.asid), std::begin(instr.asid), std::begin(this->asid));
   }

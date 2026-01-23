@@ -33,6 +33,10 @@
 #define RH_WRITE 8
 #define NUM_TYPES 9
 
+//clflush
+#define CLFLUSH 10
+//clflush
+
 // CACHE BLOCK
 class BLOCK
 {

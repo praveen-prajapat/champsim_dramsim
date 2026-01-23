@@ -1126,6 +1126,12 @@ void O3_CPU::retire_rob()
         data_packet.asid[0] = sq_it->asid[0];
         data_packet.asid[1] = sq_it->asid[1];
 
+        //clflush
+        if(ROB.front().is_clflush){
+          data_packet.type = CLFLUSH;
+        }
+        //clflush
+
         auto result = L1D_bus.lower_level->add_wq(&data_packet);
         if (result != -2) {
           ROB.front().destination_memory[i] = 0;
