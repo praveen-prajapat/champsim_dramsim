@@ -86,36 +86,75 @@ void CACHE::handle_writeback()
 
     uint64_t max_way = get_max_way(set);
 
-    if (way < max_way) // HIT
-    {
-      impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
+    if(NAME="LLC"){ //LLC
+      int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
+      if (way < max_way && s) // Hit 
+      {
+        impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
 
-      // COLLECT STATS
-      sim_hit[handle_pkt.cpu][handle_pkt.type]++;
-      sim_access[handle_pkt.cpu][handle_pkt.type]++;
+        // COLLECT STATS
+        sim_hit[handle_pkt.cpu][handle_pkt.type]++;
+        sim_access[handle_pkt.cpu][handle_pkt.type]++;
 
-      // mark dirty
-      fill_block.dirty = 1;
-    } else // MISS
-    {
-      bool success;
-      if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
-        success = readlike_miss(handle_pkt);
-      } else {
-        // find victim
-        auto set_begin = std::next(std::begin(block), set * NUM_WAY);
-        auto set_end = std::next(set_begin, max_way);
-        auto first_inv = std::find_if_not(set_begin, set_end, is_valid<BLOCK>());
-        way = std::distance(set_begin, first_inv);
-        if (way == max_way)
-          way = impl_replacement_find_victim(handle_pkt.cpu, handle_pkt.instr_id, set, &block.data()[set * NUM_WAY], handle_pkt.ip, handle_pkt.address,
-                                             handle_pkt.type);
+        // mark dirty
+        fill_block.dirty = 1;
+      } else
+      {
+        if(way < max_way && !s){ // First access
+          handle_pkt.first_access = 1;
+        }
 
-        success = filllike_miss(set, way, handle_pkt);
+        bool success;
+        if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
+          success = readlike_miss(handle_pkt);
+        } else {
+          // find victim
+          auto set_begin = std::next(std::begin(block), set * NUM_WAY);
+          auto set_end = std::next(set_begin, max_way);
+          auto first_inv = std::find_if_not(set_begin, set_end, is_valid<BLOCK>());
+          way = std::distance(set_begin, first_inv);
+          if (way == max_way)
+            way = impl_replacement_find_victim(handle_pkt.cpu, handle_pkt.instr_id, set, &block.data()[set * NUM_WAY], handle_pkt.ip, handle_pkt.address,
+                                              handle_pkt.type);
+
+          success = filllike_miss(set, way, handle_pkt);
+        }
+
+        if (!success)
+          return;
       }
+    }else{                                        //Not LLC
+      if (way < max_way) // HIT
+      {
+        impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
 
-      if (!success)
-        return;
+        // COLLECT STATS
+        sim_hit[handle_pkt.cpu][handle_pkt.type]++;
+        sim_access[handle_pkt.cpu][handle_pkt.type]++;
+
+        // mark dirty
+        fill_block.dirty = 1;
+      } else // MISS
+      {
+        bool success;
+        if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
+          success = readlike_miss(handle_pkt);
+        } else {
+          // find victim
+          auto set_begin = std::next(std::begin(block), set * NUM_WAY);
+          auto set_end = std::next(set_begin, max_way);
+          auto first_inv = std::find_if_not(set_begin, set_end, is_valid<BLOCK>());
+          way = std::distance(set_begin, first_inv);
+          if (way == max_way)
+            way = impl_replacement_find_victim(handle_pkt.cpu, handle_pkt.instr_id, set, &block.data()[set * NUM_WAY], handle_pkt.ip, handle_pkt.address,
+                                              handle_pkt.type);
+
+          success = filllike_miss(set, way, handle_pkt);
+        }
+
+        if (!success)
+          return;
+      }
     }
 
     // remove this entry from WQ
@@ -143,14 +182,35 @@ void CACHE::handle_read()
 
     uint64_t max_way = get_max_way(set);
 
-    if (way < max_way) // HIT
-    {
-      readlike_hit(set, way, handle_pkt);
-    } else {
-      bool success = readlike_miss(handle_pkt);
-      if (!success)
-        return;
+    //timecache
+    if(NAME=="LLC"){
+
+      int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
+
+      if (way < max_way && s) // HIT
+      {
+        readlike_hit(set, way, handle_pkt);
+
+      } else if(way < max_way && !s){ //First access
+        handle_pkt.first_access = 1;
+
+      }else{   //Miss
+        bool success = readlike_miss(handle_pkt);
+        if (!success)
+          return;
+
+      }
+    }else{
+      if (way < max_way) // HIT
+      {
+        readlike_hit(set, way, handle_pkt);
+      } else {
+        bool success = readlike_miss(handle_pkt);
+        if (!success)
+          return;
+      }
     }
+    //timecache
 
     // remove this entry from RQ
     RQ.pop_front();
@@ -388,15 +448,44 @@ bool CACHE::filllike_miss(std::size_t set, std::size_t way, PACKET& handle_pkt)
     if (handle_pkt.type == PREFETCH)
       pf_fill++;
 
-    fill_block.valid = true;
-    fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
-    fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
-    fill_block.address = handle_pkt.address;
-    fill_block.v_address = handle_pkt.v_address;
-    fill_block.data = handle_pkt.data;
-    fill_block.ip = handle_pkt.ip;
-    fill_block.cpu = handle_pkt.cpu;
-    fill_block.instr_id = handle_pkt.instr_id;
+    //timecache
+    if (NAME == "LLC") {
+      if(handle_pkt.first_access){ //First access
+        
+        handle_pkt.first_access = 0;
+        uint32_t original_set = get_set(handle_pkt.address);
+        uint32_t original_way = get_way(handle_pkt.address, set)
+        BLOCK& original_block = block[original_set * NUM_WAY + original_way];
+
+        original_block.s_bits[handle_pkt.cpu] = 1;   // set requesting core
+
+      }else{   //not first access
+
+        fill_block.s_bits.fill(0);               // clear previous owner(s)
+        fill_block.s_bits[handle_pkt.cpu] = 1;   // set requesting core
+
+        fill_block.valid = true;
+        fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
+        fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
+        fill_block.address = handle_pkt.address;
+        fill_block.v_address = handle_pkt.v_address;
+        fill_block.data = handle_pkt.data;
+        fill_block.ip = handle_pkt.ip;
+        fill_block.cpu = handle_pkt.cpu;
+        fill_block.instr_id = handle_pkt.instr_id;
+      }
+    }else{
+      fill_block.valid = true;
+      fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
+      fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
+      fill_block.address = handle_pkt.address;
+      fill_block.v_address = handle_pkt.v_address;
+      fill_block.data = handle_pkt.data;
+      fill_block.ip = handle_pkt.ip;
+      fill_block.cpu = handle_pkt.cpu;
+      fill_block.instr_id = handle_pkt.instr_id;
+    }
+    //timecache
   }
 
   if (warmup_complete[handle_pkt.cpu] && (handle_pkt.cycle_enqueued != 0))

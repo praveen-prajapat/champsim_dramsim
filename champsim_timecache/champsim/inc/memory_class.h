@@ -43,6 +43,10 @@ public:
 
   // replacement state
   uint32_t lru = std::numeric_limits<uint32_t>::max() >> 1;
+
+  //timecache
+  std::array<uint64_t, NUM_CPUS> s_bits{{0}};
+  //timecache
 };
 
 class MemoryRequestConsumer
