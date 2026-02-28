@@ -1,0 +1,32 @@
+nohup: ignoring input
+Starting 600.perlbench_s-570B
+Starting 602.gcc_s-734B
+Starting 603.bwaves_s-891B
+Starting 605.mcf_s-472B
+Starting 607.cactuBSSN_s-2421B
+Starting 620.omnetpp_s-141B
+Starting 619.lbm_s-2676B
+Starting 621.wrf_s-6673B
+✔ Finished 600.perlbench_s-570B
+Starting 623.xalancbmk_s-10B
+✔ Finished 603.bwaves_s-891B
+Starting 625.x264_s-20B
+✔ Finished 602.gcc_s-734B
+Starting 627.cam4_s-490B
+✔ Finished 619.lbm_s-2676B
+Starting 628.pop2_s-17B
+✔ Finished 620.omnetpp_s-141B
+Starting 649.fotonik3d_s-1176B
+✔ Finished 607.cactuBSSN_s-2421B
+Starting 654.roms_s-293B
+✔ Finished 621.wrf_s-6673B
+Starting 657.xz_s-2302B
+✔ Finished 605.mcf_s-472B
+✔ Finished 625.x264_s-20B
+✔ Finished 627.cam4_s-490B
+✔ Finished 623.xalancbmk_s-10B
+✔ Finished 628.pop2_s-17B
+✔ Finished 657.xz_s-2302B
+✔ Finished 654.roms_s-293B
+✔ Finished 649.fotonik3d_s-1176B
+All parallel simulations completed.

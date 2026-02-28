@@ -1,3 +1,4 @@
+
 /*
  *    Copyright 2023 The ChampSim Contributors
  *
@@ -26,6 +27,15 @@
 #ifndef SANITY_CHECK
 #define NDEBUG
 #endif
+
+//timecache
+#define TIMECACHE_DEBUG   // uncomment to enable
+#ifdef TIMECACHE_DEBUG
+  #define TCDBG(x) do { std::cout << x << std::endl; } while(0)
+#else
+  #define TCDBG(x) do {} while(0)
+#endif
+//timecache
 
 #define MEM_BYTES (DRAM_CHANNELS * DRAM_RANKS * DRAM_BANKS * DRAM_ROWS * DRAM_COLUMNS * BLOCK_SIZE)
 
@@ -71,6 +81,7 @@ void CACHE::handle_fill()
 
 void CACHE::handle_writeback()
 {
+
   while (writes_available_this_cycle > 0) {
     if (!WQ.has_ready())
       return;
@@ -86,23 +97,67 @@ void CACHE::handle_writeback()
 
     uint64_t max_way = get_max_way(set);
 
-    if(NAME="LLC"){ //LLC
-      int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
-      if (way < max_way && s) // Hit 
+    //timecache
+    if(NAME=="LLC"){ //LLC
+      if (way < max_way)  
       {
-        impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
+        int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
+        if(s){   // HIT
 
-        // COLLECT STATS
-        sim_hit[handle_pkt.cpu][handle_pkt.type]++;
-        sim_access[handle_pkt.cpu][handle_pkt.type]++;
+          //debugging
+          // TCDBG("[LLC_write][CPU" << handle_pkt.cpu 
+          //   << "] REUSE_HIT set=" << set 
+          //   << " way=" << way 
+          //   << " addr=0x" << std::hex << handle_pkt.address << std::dec);
+          //debugging
 
-        // mark dirty
-        fill_block.dirty = 1;
-      } else
-      {
-        if(way < max_way && !s){ // First access
-          handle_pkt.first_access = 1;
+          impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
+          // COLLECT STATS
+          sim_hit[handle_pkt.cpu][handle_pkt.type]++;
+          sim_access[handle_pkt.cpu][handle_pkt.type]++;
+          // mark dirty
+          fill_block.dirty = 1;
+
+        }else{    //FIRST ACCESS
+
+          //debugging
+          // TCDBG("[LLC_write][CPU" << handle_pkt.cpu 
+          //   << "] FIRST_ACCESS set=" << set 
+          //   << " way=" << way 
+          //   << " addr=0x" << std::hex << handle_pkt.address << std::dec);
+          //debugging
+
+          handle_pkt.sharers.requesting_cpu[handle_pkt.cpu] = 1;
+          handle_pkt.sharers.first_access[handle_pkt.cpu]  = 1;
+
+          bool success;
+          if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
+            success = readlike_miss(handle_pkt);
+          } else {
+            // find victim
+            auto set_begin = std::next(std::begin(block), set * NUM_WAY);
+            auto set_end = std::next(set_begin, max_way);
+            auto first_inv = std::find_if_not(set_begin, set_end, is_valid<BLOCK>());
+            way = std::distance(set_begin, first_inv);
+            if (way == max_way)
+              way = impl_replacement_find_victim(handle_pkt.cpu, handle_pkt.instr_id, set, &block.data()[set * NUM_WAY], handle_pkt.ip, handle_pkt.address,
+                                                handle_pkt.type);
+            success = filllike_miss(set, way, handle_pkt);
+          }
+
+          if (!success)
+            return;
         }
+
+      }else{    //miss in llc
+
+        //debugging
+        // TCDBG("[LLC_write][CPU" << handle_pkt.cpu 
+        //   << "] MISS set=" << set 
+        //   << " addr=0x" << std::hex << handle_pkt.address << std::dec);
+        //debugging
+
+        handle_pkt.sharers.requesting_cpu[handle_pkt.cpu] = 1;
 
         bool success;
         if (handle_pkt.type == RFO && handle_pkt.to_return.empty()) {
@@ -123,7 +178,8 @@ void CACHE::handle_writeback()
         if (!success)
           return;
       }
-    }else{                                        //Not LLC
+
+    }else{ //Not LLC
       if (way < max_way) // HIT
       {
         impl_replacement_update_state(handle_pkt.cpu, set, way, fill_block.address, handle_pkt.ip, 0, handle_pkt.type, 1);
@@ -156,6 +212,7 @@ void CACHE::handle_writeback()
           return;
       }
     }
+    //timecache
 
     // remove this entry from WQ
     writes_available_this_cycle--;
@@ -171,8 +228,7 @@ void CACHE::handle_read()
       return;
 
     // handle the oldest entry
-    PACKET& handle_pkt = RQ.front();
-
+    PACKET& handle_pkt = RQ.front();    
     // A (hopefully temporary) hack to know whether to send the evicted paddr or
     // vaddr to the prefetcher
     ever_seen_data |= (handle_pkt.v_address != handle_pkt.ip);
@@ -185,21 +241,97 @@ void CACHE::handle_read()
     //timecache
     if(NAME=="LLC"){
 
-      int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
+      if (way < max_way)  
+      { 
+        int s = block[set * NUM_WAY + way].s_bits[handle_pkt.cpu];
+        if(s){   //not first ACCESS
 
-      if (way < max_way && s) // HIT
-      {
-        readlike_hit(set, way, handle_pkt);
+          //debugging
+          // TCDBG("[LLC][CPU" << handle_pkt.cpu 
+          //         << "] REUSE_HIT set=" << set 
+          //         << " way=" << way 
+          //         << " addr=0x" << std::hex << handle_pkt.address << std::dec);
 
-      } else if(way < max_way && !s){ //First access
-        handle_pkt.first_access = 1;
+          // auto& sb = block[set * NUM_WAY + way].s_bits;
+          // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] s_bits: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << sb[i];
+          // }
+          // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] sharers.requesting_cpu: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << handle_pkt.sharers.requesting_cpu[i];
+          // }
+          // std::cout << " | first_access: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << handle_pkt.sharers.first_access[i];
+          // }
+          // std::cout << " addr=0x" << std::hex << handle_pkt.address << std::dec << "\n";
+          //debugging
+
+          readlike_hit(set, way, handle_pkt);
+
+        }else{   //first access
+
+          handle_pkt.sharers.requesting_cpu[handle_pkt.cpu] = 1;
+          handle_pkt.sharers.first_access[handle_pkt.cpu]  = 1;
+          
+          //debugging
+          // TCDBG("[LLC][CPU" << handle_pkt.cpu 
+          //         << "] FIRST_ACCESS set=" << set 
+          //         << " way=" << way 
+          //         << " addr=0x" << std::hex << handle_pkt.address << std::dec);
+
+          // auto& sb = block[set * NUM_WAY + way].s_bits;
+          // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] s_bits: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << sb[i];
+          // }
+          // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] sharers.requesting_cpu: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << handle_pkt.sharers.requesting_cpu[i];
+          // }
+          // std::cout << " | first_access: ";
+          // for (int i = 0; i < NUM_CPUS; i++) {
+          //     std::cout << handle_pkt.sharers.first_access[i];
+          // }
+          // std::cout << " addr=0x" << std::hex << handle_pkt.address << std::dec << "\n";
+          //debugging
+
+          bool success = readlike_miss(handle_pkt);
+          if (!success)
+            return;
+        }
 
       }else{   //Miss
+
+        handle_pkt.sharers.requesting_cpu[handle_pkt.cpu] = 1;
+
+        //debugging
+        // TCDBG("[LLC][CPU" << handle_pkt.cpu 
+        //       << "] MISS set=" << set 
+        //       << " addr=0x" << std::hex << handle_pkt.address << std::dec);
+
+        // auto& sb = block[set * NUM_WAY + way].s_bits;
+        // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] s_bits: ";
+        // for (int i = 0; i < NUM_CPUS; i++) {
+        //     std::cout << sb[i];
+        // }
+        // std::cout << "[LLC][CPU" << handle_pkt.cpu << "] sharers.requesting_cpu: ";
+        // for (int i = 0; i < NUM_CPUS; i++) {
+        //     std::cout << handle_pkt.sharers.requesting_cpu[i];
+        // }
+        // std::cout << " | first_access: ";
+        // for (int i = 0; i < NUM_CPUS; i++) {
+        //     std::cout << handle_pkt.sharers.first_access[i];
+        // }
+        // std::cout << " addr=0x" << std::hex << handle_pkt.address << std::dec << "\n";
+        //debugging
+
         bool success = readlike_miss(handle_pkt);
         if (!success)
           return;
-
       }
+      
     }else{
       if (way < max_way) // HIT
       {
@@ -234,8 +366,18 @@ void CACHE::handle_prefetch()
 
     if (way < max_way) // HIT
     {
+
+      //debugging
+      TCDBG("prefetch not off");
+      //debugging
+
       readlike_hit(set, way, handle_pkt);
     } else {
+
+      //debugging
+      TCDBG("prefetch not off");
+      //debugging
+
       bool success = readlike_miss(handle_pkt);
       if (!success)
         return;
@@ -284,108 +426,212 @@ void CACHE::readlike_hit(std::size_t set, std::size_t way, PACKET& handle_pkt)
     pf_useful++;
     hit_block.prefetch = 0;
   }
-}
-
-bool CACHE::readlike_miss(PACKET& handle_pkt)
+}bool CACHE::readlike_miss(PACKET& handle_pkt)
 {
   DP(if (warmup_complete[handle_pkt.cpu]) {
     std::cout << "[" << NAME << "] " << __func__ << " miss";
-    std::cout << " instr_id: " << handle_pkt.instr_id << " address: " << std::hex << (handle_pkt.address >> OFFSET_BITS);
-    std::cout << " full_addr: " << handle_pkt.address;
-    std::cout << " full_v_addr: " << handle_pkt.v_address << std::dec;
-    std::cout << " type: " << +handle_pkt.type;
-    std::cout << " cycle: " << current_cycle << std::endl;
+    std::cout << " instr_id: " << handle_pkt.instr_id
+              << " address: " << std::hex << (handle_pkt.address >> OFFSET_BITS)
+              << " full_addr: " << handle_pkt.address
+              << " full_v_addr: " << handle_pkt.v_address << std::dec
+              << " type: " << +handle_pkt.type
+              << " cycle: " << current_cycle << std::endl;
   });
 
-  // check mshr
-  auto mshr_entry = std::find_if(MSHR.begin(), MSHR.end(), eq_addr<PACKET>(handle_pkt.address, OFFSET_BITS));
+  auto mshr_entry = std::find_if(
+      MSHR.begin(), MSHR.end(),
+      eq_addr<PACKET>(handle_pkt.address, OFFSET_BITS));
+
   bool mshr_full = (MSHR.size() == MSHR_SIZE);
 
-  if (mshr_entry != MSHR.end()) // miss already inflight
+  // ============================================================
+  // ======================= MSHR MERGE =========================
+  // ============================================================
+
+  if (mshr_entry != MSHR.end()) 
   {
-    // update fill location
-    mshr_entry->fill_level = std::min(mshr_entry->fill_level, handle_pkt.fill_level);
+      // if (NAME == "LLC") {
+      //     std::cout << "\n[LLC MSHR BEFORE] addr=0x" << std::hex << handle_pkt.address << std::dec
+      //               << " requesting=";
+      //     for (int i = 0; i < NUM_CPUS; i++)
+      //         std::cout << mshr_entry->sharers.requesting_cpu[i];
 
-    packet_dep_merge(mshr_entry->lq_index_depend_on_me, handle_pkt.lq_index_depend_on_me);
-    packet_dep_merge(mshr_entry->sq_index_depend_on_me, handle_pkt.sq_index_depend_on_me);
-    packet_dep_merge(mshr_entry->instr_depend_on_me, handle_pkt.instr_depend_on_me);
-    packet_dep_merge(mshr_entry->to_return, handle_pkt.to_return);
+      //     std::cout << " first_access=";
+      //     for (int i = 0; i < NUM_CPUS; i++)
+      //         std::cout << mshr_entry->sharers.first_access[i];
+      //     std::cout << "\n";
 
-    if (mshr_entry->type == PREFETCH && handle_pkt.type != PREFETCH) {
-      // Mark the prefetch as useful
-      if (mshr_entry->pf_origin_level == fill_level)
-        pf_useful++;
+      //     std::cout << "[LLC MERGING CPU " << handle_pkt.cpu
+      //               << "] first_access="
+      //               << handle_pkt.sharers.first_access[handle_pkt.cpu] << "\n";
+      // }
 
-      uint64_t prior_event_cycle = mshr_entry->event_cycle;
-      *mshr_entry = handle_pkt;
+      mshr_entry->fill_level =
+          std::min(mshr_entry->fill_level, handle_pkt.fill_level);
 
-      // in case request is already returned, we should keep event_cycle
-      mshr_entry->event_cycle = prior_event_cycle;
-    }
-  } else {
-    if (mshr_full)  // not enough MSHR resource
-      return false; // TODO should we allow prefetches anyway if they will not
-                    // be filled to this level?
+      packet_dep_merge(mshr_entry->lq_index_depend_on_me,
+                       handle_pkt.lq_index_depend_on_me);
+      packet_dep_merge(mshr_entry->sq_index_depend_on_me,
+                       handle_pkt.sq_index_depend_on_me);
+      packet_dep_merge(mshr_entry->instr_depend_on_me,
+                       handle_pkt.instr_depend_on_me);
+      packet_dep_merge(mshr_entry->to_return,
+                       handle_pkt.to_return);
 
-    bool is_read = prefetch_as_load || (handle_pkt.type != PREFETCH);
+      // ---- TimeCache merge ----
+      mshr_entry->sharers.requesting_cpu[handle_pkt.cpu] = 1;
+      mshr_entry->sharers.first_access[handle_pkt.cpu] =
+          handle_pkt.sharers.first_access[handle_pkt.cpu];
 
-    // check to make sure the lower level queue has room for this read miss
-    int queue_type = (is_read) ? 1 : 3;
-    if (lower_level->get_occupancy(queue_type, handle_pkt.address) == lower_level->get_size(queue_type, handle_pkt.address))
-      return false;
+      // if (NAME == "LLC") {
+      //     std::cout << "[LLC MSHR AFTER ] addr=0x" << std::hex << handle_pkt.address << std::dec
+      //               << " requesting=";
+      //     for (int i = 0; i < NUM_CPUS; i++)
+      //         std::cout << mshr_entry->sharers.requesting_cpu[i];
 
-    // Allocate an MSHR
-    if (handle_pkt.fill_level <= fill_level) {
-      auto it = MSHR.insert(std::end(MSHR), handle_pkt);
-      it->cycle_enqueued = current_cycle;
-      it->event_cycle = std::numeric_limits<uint64_t>::max();
-    }
+      //     std::cout << " first_access=";
+      //     for (int i = 0; i < NUM_CPUS; i++)
+      //         std::cout << mshr_entry->sharers.first_access[i];
 
-    if (handle_pkt.fill_level <= fill_level)
-      handle_pkt.to_return = {this};
-    else
-      handle_pkt.to_return.clear();
+      //     std::cout << "\n\n";
+      // }
 
-    if (!is_read)
-      lower_level->add_pq(&handle_pkt);
-    else
-      lower_level->add_rq(&handle_pkt);
+      if (mshr_entry->type == PREFETCH && handle_pkt.type != PREFETCH) {
+          if (mshr_entry->pf_origin_level == fill_level)
+              pf_useful++;
+
+          uint64_t prior_event_cycle = mshr_entry->event_cycle;
+          *mshr_entry = handle_pkt;
+          mshr_entry->event_cycle = prior_event_cycle;
+      }
   }
 
-  // update prefetcher on load instructions and prefetches from upper levels
-  if (should_activate_prefetcher(handle_pkt.type) && handle_pkt.pf_origin_level < fill_level) {
-    cpu = handle_pkt.cpu;
-    uint64_t pf_base_addr = (virtual_prefetch ? handle_pkt.v_address : handle_pkt.address) & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
-    handle_pkt.pf_metadata = impl_prefetcher_cache_operate(pf_base_addr, handle_pkt.ip, 0, handle_pkt.type, handle_pkt.pf_metadata);
+  // ============================================================
+  // ===================== NEW MSHR ALLOC =======================
+  // ============================================================
+
+  else 
+  {
+      if (mshr_full)
+          return false;
+
+      bool is_read =
+          prefetch_as_load || (handle_pkt.type != PREFETCH);
+
+      int queue_type = (is_read) ? 1 : 3;
+
+      if (lower_level->get_occupancy(queue_type, handle_pkt.address) ==
+          lower_level->get_size(queue_type, handle_pkt.address))
+          return false;
+
+      if (handle_pkt.fill_level <= fill_level) 
+      {
+          auto it = MSHR.insert(std::end(MSHR), handle_pkt);
+          it->cycle_enqueued = current_cycle;
+          it->event_cycle = std::numeric_limits<uint64_t>::max();
+
+          // if (NAME == "LLC") {
+          //     std::cout << "\n[LLC NEW MSHR] addr=0x" << std::hex << handle_pkt.address << std::dec
+          //               << " CPU=" << handle_pkt.cpu << "\n";
+
+          //     std::cout << "requesting=";
+          //     for (int i = 0; i < NUM_CPUS; i++)
+          //         std::cout << it->sharers.requesting_cpu[i];
+
+          //     std::cout << " first_access=";
+          //     for (int i = 0; i < NUM_CPUS; i++)
+          //         std::cout << it->sharers.first_access[i];
+
+          //     std::cout << "\n\n";
+          // }
+      }
+
+      if (handle_pkt.fill_level <= fill_level)
+          handle_pkt.to_return = {this};
+      else
+          handle_pkt.to_return.clear();
+
+      if (!is_read)
+          lower_level->add_pq(&handle_pkt);
+      else
+          lower_level->add_rq(&handle_pkt);
+  }
+
+  // ============================================================
+  // ================= PREFETCHER UPDATE ========================
+  // ============================================================
+
+  if (should_activate_prefetcher(handle_pkt.type) &&
+      handle_pkt.pf_origin_level < fill_level) 
+  {
+      cpu = handle_pkt.cpu;
+
+      uint64_t pf_base_addr =
+          (virtual_prefetch ? handle_pkt.v_address : handle_pkt.address) &
+          ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
+
+      handle_pkt.pf_metadata =
+          impl_prefetcher_cache_operate(
+              pf_base_addr,
+              handle_pkt.ip,
+              0,
+              handle_pkt.type,
+              handle_pkt.pf_metadata);
   }
 
   return true;
 }
 
+
 bool CACHE::filllike_miss(std::size_t set, std::size_t way, PACKET& handle_pkt)
 {
   DP(if (warmup_complete[handle_pkt.cpu]) {
     std::cout << "[" << NAME << "] " << __func__ << " miss";
-    std::cout << " instr_id: " << handle_pkt.instr_id << " address: " << std::hex << (handle_pkt.address >> OFFSET_BITS);
-    std::cout << " full_addr: " << handle_pkt.address;
-    std::cout << " full_v_addr: " << handle_pkt.v_address << std::dec;
-    std::cout << " type: " << +handle_pkt.type;
-    std::cout << " cycle: " << current_cycle << std::endl;
+    std::cout << " instr_id: " << handle_pkt.instr_id
+              << " address: " << std::hex << (handle_pkt.address >> OFFSET_BITS)
+              << " full_addr: " << handle_pkt.address
+              << " full_v_addr: " << handle_pkt.v_address << std::dec
+              << " type: " << +handle_pkt.type
+              << " cycle: " << current_cycle << std::endl;
   });
 
   uint64_t max_way = get_max_way(set);
-
   bool bypass = (way == max_way);
+
 #ifndef LLC_BYPASS
   assert(!bypass);
 #endif
   assert(handle_pkt.type != WRITEBACK || !bypass);
 
   BLOCK& fill_block = block[set * NUM_WAY + way];
-  bool evicting_dirty = !bypass && (lower_level != NULL) && fill_block.dirty;
+
+  bool evicting_dirty =
+      !bypass && lower_level != NULL &&
+      fill_block.dirty &&
+      !handle_pkt.sharers.first_access.any();
+
   uint64_t evicting_address = 0;
 
   if (!bypass) {
+
+    // ====================================================
+    // ================== EVICTION PRINT =================
+    // ====================================================
+
+    // if (NAME == "LLC" && fill_block.valid) {
+
+    //     std::cout << "[LLC][EVICT] set=" << set
+    //               << " way=" << way
+    //               << " evict_addr=0x" << std::hex << fill_block.address
+    //               << " new_addr=0x" << handle_pkt.address << std::dec
+    //               << " s_bits=";
+
+    //     for (int i = 0; i < NUM_CPUS; i++)
+    //         std::cout << fill_block.s_bits[i];
+
+    //     std::cout << "\n";
+    // }
+
     if (evicting_dirty) {
       PACKET writeback_packet;
 
@@ -400,47 +646,14 @@ bool CACHE::filllike_miss(std::size_t set, std::size_t way, PACKET& handle_pkt)
       auto result = lower_level->add_wq(&writeback_packet);
       if (result == -2)
         return false;
-
-      if (VWQ_ENABLE && NAME == "LLC") {
-        // Write up-to 32 dirty lines in nearby 16 sets from same page 
-        int max_nearby_writebacks = 32;
-        int max_sets_per_side = 16;
-        uint32_t wq_set_begin = (set > max_sets_per_side) ? set - max_sets_per_side : 0,
-                 wq_set_end = (set < NUM_SET - max_sets_per_side) ? set + max_sets_per_side : NUM_SET;
-        uint64_t max_way = get_max_way(set);
-        for (uint32_t i = wq_set_begin; (i < wq_set_end) && max_nearby_writebacks; i++) {
-          for (uint32_t j = i*NUM_WAY; (j < i*NUM_WAY + max_way) && max_nearby_writebacks; j++) {
-            if (!(i == set && j == way) && block[j].valid && block[j].dirty
-                && (block[j].address >> LOG2_PAGE_SIZE) == (fill_block.address >> LOG2_PAGE_SIZE)) {
-              PACKET nearby_writeback_packet;
-
-              nearby_writeback_packet.fill_level = lower_level->fill_level;
-              nearby_writeback_packet.cpu = block[j].cpu;
-              nearby_writeback_packet.address = block[j].address;
-              nearby_writeback_packet.data = block[j].data;
-              nearby_writeback_packet.instr_id = block[j].instr_id;
-              nearby_writeback_packet.ip = 0;
-              nearby_writeback_packet.type = WRITEBACK;
-              nearby_writeback_packet.to_return = {this};
-
-              if (lower_level->add_wq(&nearby_writeback_packet) != -2) {
-                max_nearby_writebacks--;
-                s_early_writebacks++;
-                block[j].dirty = false;
-              }
-              else {
-                max_nearby_writebacks = 0; // WQ is full, no need to search for more lines
-              }
-            }
-          }
-        }
-      }
     }
 
     if (ever_seen_data)
-      evicting_address = fill_block.address & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
+      evicting_address =
+          fill_block.address & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
     else
-      evicting_address = fill_block.v_address & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
+      evicting_address =
+          fill_block.v_address & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS);
 
     if (fill_block.prefetch)
       pf_useless++;
@@ -448,64 +661,134 @@ bool CACHE::filllike_miss(std::size_t set, std::size_t way, PACKET& handle_pkt)
     if (handle_pkt.type == PREFETCH)
       pf_fill++;
 
-    //timecache
+    // ==================== TIMECACHE ====================
     if (NAME == "LLC") {
-      if(handle_pkt.first_access){ //First access
-        
-        handle_pkt.first_access = 0;
-        uint32_t original_set = get_set(handle_pkt.address);
-        uint32_t original_way = get_way(handle_pkt.address, set)
-        BLOCK& original_block = block[original_set * NUM_WAY + original_way];
+        // -------- CASE 1: First-access reuse --------
+        if (handle_pkt.sharers.first_access.any()) {
 
-        original_block.s_bits[handle_pkt.cpu] = 1;   // set requesting core
+            uint32_t original_set = get_set(handle_pkt.address);
+            uint32_t original_way = get_way(handle_pkt.address, original_set);
+            uint32_t max_way = get_max_way(original_set);
+            set=original_set;
+            way=original_way;
 
-      }else{   //not first access
+            if (original_way == max_way) {
+                std::cout << "[TIMECACHE BUG] original_way==max_way addr=0x"
+                          << std::hex << handle_pkt.address << std::dec << "\n";
+            }
 
-        fill_block.s_bits.fill(0);               // clear previous owner(s)
-        fill_block.s_bits[handle_pkt.cpu] = 1;   // set requesting core
+            BLOCK& original_block =
+                block[original_set * NUM_WAY + original_way];
+
+            // ---------- BEFORE ----------
+            // std::cout << "[LLC][REUSE] block_addr=0x"
+            //           << std::hex << original_block.address
+            //           << " incoming_addr=0x" << handle_pkt.address << std::dec
+            //           << " s_bits=";
+
+            // for (int i = 0; i < NUM_CPUS; i++)
+            //     std::cout << original_block.s_bits[i];
+
+            // std::cout << " | requesting=";
+            // for (int i = 0; i < NUM_CPUS; i++)
+            //     std::cout << handle_pkt.sharers.requesting_cpu[i];
+
+            // std::cout << "\n";
+
+            // ---------- UPDATE ----------
+            original_block.s_bits |= handle_pkt.sharers.requesting_cpu;
+
+            // ---------- AFTER ----------
+            // std::cout << "[LLC][REUSE AFTER] block_addr=0x"
+            //           << std::hex << original_block.address << std::dec
+            //           << " s_bits=";
+
+            // for (int i = 0; i < NUM_CPUS; i++)
+            //     std::cout << original_block.s_bits[i];
+
+            // std::cout << "\n\n";
+
+            // Clear temp flags
+            handle_pkt.sharers.first_access.reset();
+            handle_pkt.sharers.requesting_cpu.reset();
+        }
+
+
+        // -------- CASE 2: New miss fill --------
+        else {
+
+            // std::cout << "[LLC][MISS-FILL BEFORE] s_bits=";
+            // for (int i = 0; i < NUM_CPUS; i++)
+            //     std::cout << fill_block.s_bits[i];
+            // std::cout << "\n";
+
+            // fill_block.s_bits = handle_pkt.sharers.requesting_cpu;
+
+            // std::cout << "[LLC][MISS-FILL AFTER ] s_bits=";
+            // for (int i = 0; i < NUM_CPUS; i++)
+            //     std::cout << fill_block.s_bits[i];
+            // std::cout << "\n\n";
+
+            fill_block.valid = true;
+            fill_block.prefetch =
+                (handle_pkt.type == PREFETCH &&
+                 handle_pkt.pf_origin_level == fill_level);
+            fill_block.dirty =
+                (handle_pkt.type == WRITEBACK ||
+                 (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
+            fill_block.address = handle_pkt.address;
+            fill_block.v_address = handle_pkt.v_address;
+            fill_block.data = handle_pkt.data;
+            fill_block.ip = handle_pkt.ip;
+            fill_block.cpu = handle_pkt.cpu;
+            fill_block.instr_id = handle_pkt.instr_id;
+        }
+    }
+
+    // -------- Non-LLC behavior --------
+    else {
 
         fill_block.valid = true;
-        fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
-        fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
+        fill_block.prefetch =
+            (handle_pkt.type == PREFETCH &&
+             handle_pkt.pf_origin_level == fill_level);
+        fill_block.dirty =
+            (handle_pkt.type == WRITEBACK ||
+             (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
         fill_block.address = handle_pkt.address;
         fill_block.v_address = handle_pkt.v_address;
         fill_block.data = handle_pkt.data;
         fill_block.ip = handle_pkt.ip;
         fill_block.cpu = handle_pkt.cpu;
         fill_block.instr_id = handle_pkt.instr_id;
-      }
-    }else{
-      fill_block.valid = true;
-      fill_block.prefetch = (handle_pkt.type == PREFETCH && handle_pkt.pf_origin_level == fill_level);
-      fill_block.dirty = (handle_pkt.type == WRITEBACK || (handle_pkt.type == RFO && handle_pkt.to_return.empty()));
-      fill_block.address = handle_pkt.address;
-      fill_block.v_address = handle_pkt.v_address;
-      fill_block.data = handle_pkt.data;
-      fill_block.ip = handle_pkt.ip;
-      fill_block.cpu = handle_pkt.cpu;
-      fill_block.instr_id = handle_pkt.instr_id;
     }
-    //timecache
+    // ==================== TIMECACHE END ====================
   }
 
-  if (warmup_complete[handle_pkt.cpu] && (handle_pkt.cycle_enqueued != 0))
+  if (warmup_complete[handle_pkt.cpu] && handle_pkt.cycle_enqueued != 0)
     total_miss_latency += current_cycle - handle_pkt.cycle_enqueued;
 
-  // update prefetcher
   cpu = handle_pkt.cpu;
   handle_pkt.pf_metadata =
-      impl_prefetcher_cache_fill((virtual_prefetch ? handle_pkt.v_address : handle_pkt.address) & ~bitmask(match_offset_bits ? 0 : OFFSET_BITS), set, way,
-                                 handle_pkt.type == PREFETCH, evicting_address, handle_pkt.pf_metadata);
+      impl_prefetcher_cache_fill(
+          (virtual_prefetch ? handle_pkt.v_address : handle_pkt.address) &
+              ~bitmask(match_offset_bits ? 0 : OFFSET_BITS),
+          set, way,
+          handle_pkt.type == PREFETCH,
+          evicting_address,
+          handle_pkt.pf_metadata);
 
-  // update replacement policy
-  impl_replacement_update_state(handle_pkt.cpu, set, way, handle_pkt.address, handle_pkt.ip, 0, handle_pkt.type, 0);
+  impl_replacement_update_state(
+      handle_pkt.cpu, set, way,
+      handle_pkt.address, handle_pkt.ip,
+      0, handle_pkt.type, 0);
 
-  // COLLECT STATS
   sim_miss[handle_pkt.cpu][handle_pkt.type]++;
   sim_access[handle_pkt.cpu][handle_pkt.type]++;
 
   return true;
 }
+
 
 void CACHE::operate()
 {

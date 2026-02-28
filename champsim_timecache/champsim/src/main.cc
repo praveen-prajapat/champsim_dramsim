@@ -508,7 +508,7 @@ int main(int argc, char** argv)
       traces.push_back(get_tracereader(argv[optind], i, knob_cs_traces[traces.size()] == 'y' ? true : false));
     }
   }
-
+//timecache
 
   // SHARED CACHE
   for (O3_CPU* cpu : ooo_cpu) {

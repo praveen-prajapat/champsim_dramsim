@@ -19,10 +19,13 @@
 
 #include <algorithm>
 #include <vector>
+#include <bitset>
 
 #include "champsim_constants.h"
 #include "circular_buffer.hpp"
 #include "instruction.h"
+
+
 
 class MemoryRequestProducer;
 class LSQ_ENTRY;
@@ -41,6 +44,13 @@ struct ACTInfo
           : ch(_ch), ra(_ra), ba(_ba), ro(_ro),
             tON(_tON), tPRE(_tPRE), tRC(_tRC)  {}
 };
+
+//timecache
+struct sharer_info {
+    std::bitset<NUM_CPUS> requesting_cpu{};
+    std::bitset<NUM_CPUS> first_access{};
+};
+//timecache
 
 // message packet
 class PACKET
@@ -68,7 +78,7 @@ public:
   uint8_t translation_level = 0, init_translation_level = 0;
 
   //timecache
-  uint8_t first_access = 0;
+  sharer_info sharers;
   //timecache
 };
 

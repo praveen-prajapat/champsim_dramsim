@@ -49,8 +49,8 @@ uint64_t VirtualMemory::get_offset(uint64_t vaddr, uint32_t level) const { retur
 
 std::pair<uint64_t, bool> VirtualMemory::va_to_pa(uint32_t cpu_num, uint64_t vaddr)
 {
-  auto [ppage, fault] = vpage_to_ppage_map.insert({{cpu_num, vaddr >> LOG2_PAGE_SIZE}, ppage_free_list.front()});
-
+  auto [ppage, fault] = vpage_to_ppage_map.insert({{0, vaddr >> LOG2_PAGE_SIZE}, ppage_free_list.front()});
+//timecache
   // this vpage doesn't yet have a ppage mapping
   if (fault) {
     s_proc_ppages_used++;
