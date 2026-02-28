@@ -3,7 +3,7 @@
 The expected directory structure is:
 
 ```
-impress_micro2024
+champsim_timecache
 |-dramsim3
 |-champsim
 |-pythia
